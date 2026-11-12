@@ -36,10 +36,12 @@ function rtp(job,frame){const p=Buffer.alloc(16+frame.length);p[0]=0x80;p[1]=14;
   job.ts+=2351; /* 1152 uzoraka @44.1k na 90 kHz satu */
   for(const d of job.dests)sock.send(p,d.port,d.host)}
 function item(job,it){return new Promise(res=>{
-  const a=['-hide_banner','-loglevel','error',...(it.live?['-fflags','nobuffer']:['-re']),'-i',it.input,'-vn','-ar','44100','-ac','2',
-    '-c:a','libmp3lame','-b:a','128k','-write_xing','0','-id3v2_version','0','-f','mp3','pipe:1'];
-  const p=spawn('ffmpeg',a,{stdio:[it.live?'pipe':'ignore','pipe','pipe']});job.proc=p;
-  p.stdin&&p.stdin.on('error',()=>{});p.stdout.on('data',parser(f=>rtp(job,f)));
+  const a=['-hide_banner','-loglevel','error',...(it.live?['-fflags','nobuffer']:['-re']),'-i',it.input,'-map','0:a','-ar','44100','-ac','2',
+    '-c:a','libmp3lame','-b:a','128k','-write_xing','0','-id3v2_version','0','-f','mp3','pipe:1','-map','0:a','-ac','1','-ar','8000','-f','s16le','pipe:3'];
+  const p=spawn('ffmpeg',a,{stdio:[it.live?'pipe':'ignore','pipe','pipe','pipe']});job.proc=p;
+  p.stdin&&p.stdin.on('error',()=>{});
+  p.stdio[3].on('data',b=>{let q=0;const n=b.length>>1;for(let i=0;i<n;i++){const v=b.readInt16LE(i*2);q+=v*v}job.lv=Math.max(job.lv||0,Math.sqrt(q/Math.max(n,1))/32768)});p.stdio[3].on('error',()=>{});
+  p.stdout.on('data',parser(f=>rtp(job,f)));
   p.stderr.on('data',d=>ev('warn',`ffmpeg (${it.name}): ${String(d).trim().slice(0,200)}`));
   p.on('error',e=>{ev('error','ffmpeg nije dostupan: '+e.message);res()});p.on('close',res)})}
 async function run(job,items,loop){let quick=0;
@@ -75,6 +77,11 @@ function start(target,source,loop,user){
   jobs.set(job.id,job);free.forEach(d=>busy.set(d.id,job.id));
   if(skipped.length)ev('warn',`Preskočeno (zauzeto višim prioritetom): ${skipped.map(d=>d.name).join(', ')}`,user);
   ev('info',`Start: ${job.label}${multi?' (multicast '+g.multicast+')':''}${loop?' [petlja]':''}`,user);run(job,items,loop);return {job,skipped:skipped.map(d=>d.name)}}
+
+/* ---------- VU metar: razina signala po poslu, 10x u sekundi ---------- */
+setInterval(()=>{if(!jobs.size||!clients.size)return;const l={};
+  for(const j of jobs.values()){const v=j.lv||0;j.lv=0;l[j.id]=Math.max(0,Math.min(1,(20*Math.log10(v+1e-6)+60)/60))}
+  const m=JSON.stringify({type:'vu',l});clients.forEach((ro,c)=>c.readyState===1&&c.send(m))},100);
 
 /* ---------- SNMP nadzor ---------- */
 const OIDS=['1.3.6.1.2.1.1.1.0','1.3.6.1.2.1.1.3.0','1.3.6.1.2.1.2.2.1.10.1','1.3.6.1.2.1.2.2.1.16.1'];

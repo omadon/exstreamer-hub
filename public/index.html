@@ -12,6 +12,9 @@ nav{display:flex;gap:2px;border-top:1px solid #ffffff22}nav button{display:flex;
 nav button.a{color:#fff;border-bottom-color:#fff;background:#ffffff14}nav button:hover{color:#fff}
 #air{display:grid;gap:0;background:var(--live)}#air:empty{display:none}
 .job{display:flex;align-items:center;gap:12px;color:#fff;padding:9px 0}.job b{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.job small{opacity:.8}
+.vu{width:160px;height:12px;flex:none;background:#0005;-webkit-mask-image:repeating-linear-gradient(90deg,#000 0 5px,transparent 5px 7px);mask-image:repeating-linear-gradient(90deg,#000 0 5px,transparent 5px 7px);border-radius:2px;overflow:hidden}
+.vu i{display:block;height:100%;background:linear-gradient(90deg,#4cd37b 0 62%,#ffd23f 62% 85%,#fff 85%);clip-path:inset(0 100% 0 0);transition:clip-path .08s linear}
+.job small{max-width:28%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.job b{min-width:0}
 .pulse{width:10px;height:10px;border-radius:50%;background:#fff;animation:p 1.4s infinite}@keyframes p{50%{box-shadow:0 0 0 7px #fff3}}@media(prefers-reduced-motion:reduce){.pulse{animation:none}}
 main{padding:24px 16px}.bar{display:flex;align-items:center;gap:10px;margin:0 0 16px;padding-bottom:10px;border-bottom:2px solid var(--line);position:relative}
 .bar:after{content:"";position:absolute;left:0;bottom:-2px;width:64px;height:2px;background:var(--blue)}.bar h2{margin:0;font-size:15px;letter-spacing:.1em;text-transform:uppercase;color:var(--navy);flex:1}
@@ -29,7 +32,7 @@ label{display:grid;gap:4px;font-size:12px;color:var(--mute);text-transform:upper
 dialog{border:none;border-top:4px solid var(--blue);border-radius:3px;padding:22px;width:min(440px,92vw);background:#fff;color:var(--ink)}dialog::backdrop{background:#0a1a3099}dialog h2{margin:0 0 4px;color:var(--navy);font-size:17px}
 form{display:grid;gap:12px}.li{display:flex;align-items:center;gap:8px;padding:9px 0;border-bottom:1px solid var(--line)}.li>span{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.li:last-child{border:0}
 .ev{padding:9px 0;border-bottom:1px solid var(--line);border-left:3px solid transparent;padding-left:10px}.ev.error{color:var(--live);border-color:var(--live)}.ev.warn{color:var(--warn);border-color:var(--warn)}
-@media(max-width:720px){nav{position:fixed;bottom:0;left:0;right:0;background:var(--navy);border-top:1px solid #ffffff33;justify-content:space-around;padding-bottom:env(safe-area-inset-bottom);z-index:9}
+@media(max-width:720px){.vu{width:84px}.job small{display:none}nav{position:fixed;bottom:0;left:0;right:0;background:var(--navy);border-top:1px solid #ffffff33;justify-content:space-around;padding-bottom:env(safe-area-inset-bottom);z-index:9}
  nav button{flex-direction:column;gap:2px;font-size:10px;padding:8px 6px;flex:1;justify-content:center;border-bottom:0;border-top:3px solid transparent}nav button.a{border-top-color:#fff}.logo small,.who .tag{display:none}.hide-m{display:none}}
 </style></head><body>
 <header><div class="wrap"><div class="top"><div class="logo"><b id="lg"></b><span>Exstreamer Hub<small>Upravljanje zvučnicima</small></span></div><span class="sp"></span>
@@ -45,9 +48,11 @@ const api=async(m,u,b)=>{const r=await fetch('/api/'+u,{method:m,headers:b&&!(b 
   const j=await r.json().catch(()=>({}));if(r.status==401&&u!=='login'){loginForm();throw 0}if(!r.ok){alert(j.error||'Greška');throw 0}if(m!=='GET'&&u!=='login'&&u!=='logout')refresh();return j};
 async function refresh(){try{S=await api('GET','state');draw()}catch{}}
 setInterval(()=>{if(role&&(!ws||ws.readyState!==1))refresh()},4000);
+const lv={};
+function vu(l){for(const id in l){lv[id]=Math.max(l[id],(lv[id]||0)*.82);const i=document.querySelector('#vu-'+id+' i');if(i)i.style.clipPath=`inset(0 ${(1-lv[id])*100}% 0 0)`}}
 const T={uredaji:['Uređaji','spk'],grupe:['Grupe','grp'],zvukovi:['Zvukovi','mus'],dogadaji:['Događaji','act']};
 let ws;function connect(){ws=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws/state');
-  ws.onmessage=e=>{S=JSON.parse(e.data);draw()};ws.onclose=()=>role&&setTimeout(connect,2000)}
+  ws.onmessage=e=>{const m=JSON.parse(e.data);if(m.type==='vu')return vu(m.l);S=m;draw()};ws.onclose=()=>role&&setTimeout(connect,2000)}
 async function init(){try{const m=await api('GET','me');role=m.role;user=m.user;connect();draw();refresh()}catch{}}
 function fmt(s){if(s==null)return'–';const d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);return(d?d+'d ':'')+h+'h '+m+'m'}
 const mb=n=>n==null?'–':(n/1048576).toFixed(1)+' MB';
@@ -55,7 +60,7 @@ const B=(ic,t,cls='',oc='')=>`<button class="${cls}" onclick="${oc}">${I(ic)}<sp
 function draw(){
   $('#who').innerHTML=`<span class="tag">${esc(user)} · ${adm()?'Administrator':'Operator'}</span>`+B('out','<span class="hide-m">Odjava</span>','','logout()')+B('play','Pusti zvuk','p','play()');
   $('#nav').innerHTML=Object.entries(T).map(([k,[v,ic]])=>`<button class="${k==tab?'a':''}" onclick="tab='${k}';draw()">${I(ic)}<span>${v}${k=='dogadaji'&&S.events.some(e=>e.level=='error')?' •':''}</span></button>`).join('');
-  $('#airi').innerHTML=S.jobs.map(j=>`<div class="job"><span class="pulse"></span><b>${esc(j.label)}</b><small>${esc(j.now||'')}</small>${B('stop','Stop','',`stopJob('${j.id}')`)}</div>`).join('');
+  $('#airi').innerHTML=S.jobs.map(j=>`<div class="job"><span class="pulse"></span><b>${esc(j.label)}</b><div class="vu" id="vu-${j.id}"><i style="clip-path:inset(0 ${(1-(lv[j.id]||0))*100}% 0 0)"></i></div><small>${esc(j.now||'')}</small>${B('stop','Stop','',`stopJob('${j.id}')`)}</div>`).join('');
   $('#v').innerHTML=({uredaji:vDev,grupe:vGrp,zvukovi:vSnd,dogadaji:vEv})[tab]()}
 const bar=(t,btn)=>`<div class="bar"><h2>${t}</h2>${btn||''}</div>`;
 const empty=t=>`<p class="mute">${t}</p>`;
