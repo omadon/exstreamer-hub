@@ -42,11 +42,13 @@ let S={devices:[],groups:[],playlists:[],files:[],jobs:[],events:[]},tab='uredaj
 const $=s=>document.querySelector(s),esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])),adm=()=>role==='admin';
 $('#lg').innerHTML=I('spk');
 const api=async(m,u,b)=>{const r=await fetch('/api/'+u,{method:m,headers:b&&!(b instanceof FormData)?{'content-type':'application/json'}:{},body:b instanceof FormData?b:b&&JSON.stringify(b)});
-  const j=await r.json().catch(()=>({}));if(r.status==401&&u!=='login'){loginForm();throw 0}if(!r.ok){alert(j.error||'Greška');throw 0}return j};
+  const j=await r.json().catch(()=>({}));if(r.status==401&&u!=='login'){loginForm();throw 0}if(!r.ok){alert(j.error||'Greška');throw 0}if(m!=='GET'&&u!=='login'&&u!=='logout')refresh();return j};
+async function refresh(){try{S=await api('GET','state');draw()}catch{}}
+setInterval(()=>{if(role&&(!ws||ws.readyState!==1))refresh()},4000);
 const T={uredaji:['Uređaji','spk'],grupe:['Grupe','grp'],zvukovi:['Zvukovi','mus'],dogadaji:['Događaji','act']};
 let ws;function connect(){ws=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws/state');
   ws.onmessage=e=>{S=JSON.parse(e.data);draw()};ws.onclose=()=>role&&setTimeout(connect,2000)}
-async function init(){try{const m=await api('GET','me');role=m.role;user=m.user;connect();draw()}catch{}}
+async function init(){try{const m=await api('GET','me');role=m.role;user=m.user;connect();draw();refresh()}catch{}}
 function fmt(s){if(s==null)return'–';const d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);return(d?d+'d ':'')+h+'h '+m+'m'}
 const mb=n=>n==null?'–':(n/1048576).toFixed(1)+' MB';
 const B=(ic,t,cls='',oc='')=>`<button class="${cls}" onclick="${oc}">${I(ic)}<span>${t}</span></button>`;
@@ -102,7 +104,9 @@ async function live(target){stopMic();try{const stream=await navigator.mediaDevi
   const rec=new MediaRecorder(stream);mic={ws:w,rec,stream};
   w.onmessage=e=>{const m=JSON.parse(e.data);if(m.error){alert(m.error);stopMic()}else rec.start(250)};
   rec.ondataavailable=e=>w.readyState==1&&e.data.size&&w.send(e.data);w.onclose=stopMic}
-  catch(e){alert('Mikrofon nije dostupan. Za pristup mikrofonu treba HTTPS ili localhost.')}}
+  catch(e){const n=e&&e.name;alert(!window.isSecureContext||!navigator.mediaDevices?`Preglednik ne smatra ovu stranicu sigurnom (${location.origin}). Otvori je preko https:// s valjanim certifikatom, ne preko http:// ili IP adrese.`
+    :n==='NotAllowedError'?'Pristup mikrofonu je odbijen. Dopusti mikrofon za ovu stranicu (ikona lokota u adresnoj traci) ili ga blokira pravilo Permissions-Policy / postavke preglednika.'
+    :n==='NotFoundError'?'Nije pronađen nijedan mikrofon.':n==='NotReadableError'?'Mikrofon koristi druga aplikacija.':'Mikrofon nije dostupan: '+(n||'')+' '+(e&&e.message||''))}}
 function stopMic(){if(!mic)return;const m=mic;mic=null;try{m.rec.state!='inactive'&&m.rec.stop()}catch{};m.stream.getTracks().forEach(t=>t.stop());try{m.ws.close()}catch{}}
 const stopJob=async id=>{stopMic();await api('POST','stop',{jobId:id})};
 const del=(k,id)=>confirm('Obrisati?')&&api('DELETE',k+'/'+id),delFile=f=>confirm('Obrisati '+f+'?')&&api('DELETE','files/'+encodeURIComponent(f));
