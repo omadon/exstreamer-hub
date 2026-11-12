@@ -5,8 +5,19 @@ services:
     network_mode: host        # potrebno za multicast i UDP prema uređajima
     environment:
       PORT: 8080
-      ADMIN_PASSWORD: admin      # admin: dodaje/briše uređaje, zapise, playliste
-      #OPERATOR_PASSWORD: operater     # ako je postavljeno, operator se mora prijaviti; inače je GUI otvoren za puštanje
-      # ALERT_WEBHOOK: https://hooks.slack.com/...   (opcionalno, šalje JSON {"text": "..."})
+      # --- Admin: korisničko ime "admin" + ova lozinka ---
+      ADMIN_PASSWORD: admin
+      # --- Operateri: Active Directory (LDAP) ---
+      LDAP_URL: ldaps://dc01.firma.local:636
+      LDAP_DOMAIN: firma.local                      # prijava kao korisnik@firma.local
+      LDAP_BASE_DN: DC=firma,DC=local               # za provjeru članstva u grupi
+      LDAP_GROUP_DN: CN=Hub-Operatori,OU=Grupe,DC=firma,DC=local   # opcionalno: samo članovi ove grupe (uključujući ugniježđene)
+      # LDAP_TLS_INSECURE: "1"                      # samo ako DC ima self-signed certifikat
+      # --- Centralni syslog (RFC 5424) ---
+      SYSLOG_HOST: syslog.firma.local
+      SYSLOG_PORT: 514
+      SYSLOG_PROTO: udp                             # udp ili tcp
+      # SYSLOG_FACILITY: 16                         # 16 = local0
+      # ALERT_WEBHOOK: https://hooks.slack.com/...  # opcionalno
     volumes:
       - ./data:/data

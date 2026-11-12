@@ -38,7 +38,7 @@ form{display:grid;gap:12px}.li{display:flex;align-items:center;gap:8px;padding:9
 <script>
 const P={play:'<polygon points="6 3 20 12 6 21"/>',stop:'<rect x="5" y="5" width="14" height="14" rx="1"/>',plus:'<path d="M12 5v14M5 12h14"/>',trash:'<path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/>',edit:'<path d="M12 20h9M16.5 3.5a2.1 2.1 0 013 3L7 19l-4 1 1-4z"/>',upload:'<path d="M12 16V4M7 9l5-5 5 5M4 20h16"/>',mic:'<rect x="9" y="3" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0014 0M12 18v3"/>',spk:'<path d="M4 9h4l5-4v14l-5-4H4zM16 9a4 4 0 010 6M18.5 6.5a8 8 0 010 11"/>',grp:'<path d="M12 3l9 5-9 5-9-5zM3 13l9 5 9-5"/>',mus:'<path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>',act:'<path d="M3 12h4l3-8 4 16 3-8h4"/>',out:'<path d="M9 21H5V3h4M16 17l5-5-5-5M21 12H9"/>',key:'<circle cx="8" cy="15" r="4"/><path d="M11 12l9-9M16 7l3 3"/>',list:'<path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>'};
 const I=n=>`<svg class="i" viewBox="0 0 24 24">${P[n]}</svg>`;
-let S={devices:[],groups:[],playlists:[],files:[],jobs:[],events:[]},tab='uredaji',mic=null,role=null;
+let S={devices:[],groups:[],playlists:[],files:[],jobs:[],events:[]},tab='uredaji',mic=null,role=null,user='';
 const $=s=>document.querySelector(s),esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])),adm=()=>role==='admin';
 $('#lg').innerHTML=I('spk');
 const api=async(m,u,b)=>{const r=await fetch('/api/'+u,{method:m,headers:b&&!(b instanceof FormData)?{'content-type':'application/json'}:{},body:b instanceof FormData?b:b&&JSON.stringify(b)});
@@ -46,12 +46,12 @@ const api=async(m,u,b)=>{const r=await fetch('/api/'+u,{method:m,headers:b&&!(b 
 const T={uredaji:['Uređaji','spk'],grupe:['Grupe','grp'],zvukovi:['Zvukovi','mus'],dogadaji:['Događaji','act']};
 let ws;function connect(){ws=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws/state');
   ws.onmessage=e=>{S=JSON.parse(e.data);draw()};ws.onclose=()=>role&&setTimeout(connect,2000)}
-async function init(){try{role=(await api('GET','me')).role;connect();draw()}catch{}}
+async function init(){try{const m=await api('GET','me');role=m.role;user=m.user;connect();draw()}catch{}}
 function fmt(s){if(s==null)return'–';const d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);return(d?d+'d ':'')+h+'h '+m+'m'}
 const mb=n=>n==null?'–':(n/1048576).toFixed(1)+' MB';
 const B=(ic,t,cls='',oc='')=>`<button class="${cls}" onclick="${oc}">${I(ic)}<span>${t}</span></button>`;
 function draw(){
-  $('#who').innerHTML=`<span class="tag">${adm()?'Administrator':'Operator'}</span>`+(adm()?B('out','Odjava','','logout()'):B('key','<span class="hide-m">Admin</span>','','loginForm()'))+B('play','Pusti zvuk','p','play()');
+  $('#who').innerHTML=`<span class="tag">${esc(user)} · ${adm()?'Administrator':'Operator'}</span>`+B('out','<span class="hide-m">Odjava</span>','','logout()')+B('play','Pusti zvuk','p','play()');
   $('#nav').innerHTML=Object.entries(T).map(([k,[v,ic]])=>`<button class="${k==tab?'a':''}" onclick="tab='${k}';draw()">${I(ic)}<span>${v}${k=='dogadaji'&&S.events.some(e=>e.level=='error')?' •':''}</span></button>`).join('');
   $('#airi').innerHTML=S.jobs.map(j=>`<div class="job"><span class="pulse"></span><b>${esc(j.label)}</b><small>${esc(j.now||'')}</small>${B('stop','Stop','',`stopJob('${j.id}')`)}</div>`).join('');
   $('#v').innerHTML=({uredaji:vDev,grupe:vGrp,zvukovi:vSnd,dogadaji:vEv})[tab]()}
@@ -69,15 +69,16 @@ function vSnd(){return bar('Zvučni zapisi',adm()?`<label class="btn" style="cur
   `<div class="card">`+(S.files.map(f=>`<div class="li"><span class="ico">${I('mus')}</span><span>${esc(f)}</span><audio controls preload="none" src="/api/files/${encodeURIComponent(f)}" style="height:32px;max-width:36%"></audio>${adm()?B('trash','','d',`delFile('${esc(f)}')`):''}</div>`).join('')||empty('Nema zapisa.'))+`</div><div style="height:28px"></div>`+
   bar('Playliste',adm()?`<label class="btn" style="cursor:pointer">${I('upload')}Uvezi .m3u<input type="file" accept=".m3u,.m3u8" hidden onchange="imp(this)"></label>`+B('plus','Nova','p','plForm()'):'')+
   `<div class="card">`+(S.playlists.map(p=>`<div class="li"><span class="ico">${I('list')}</span><span><b>${esc(p.name)}</b> <span class="mute">${p.tracks.length} zapisa</span></span>${adm()?B('edit','','',`plForm('${p.id}')`)+B('trash','','d',`del('playlists','${p.id}')`):''}</div>`).join('')||empty('Nema playlista.'))+`</div>`}
-function vEv(){return bar('Događaji i upozorenja')+`<div class="card">`+(S.events.map(e=>`<div class="ev ${e.level}"><span class="mute">${new Date(e.t).toLocaleString('hr')}</span><br>${esc(e.msg)}</div>`).join('')||empty('Sve mirno.'))+`</div>`}
-const dlg=$('#dlg');const show=h=>{dlg.innerHTML=h;dlg.showModal()};
+function vEv(){return bar('Događaji i upozorenja')+`<div class="card">`+(S.events.map(e=>`<div class="ev ${e.level}"><span class="mute">${new Date(e.t).toLocaleString('hr')}${e.user?' · <b>'+esc(e.user)+'</b>':''}</span><br>${esc(e.msg)}</div>`).join('')||empty('Sve mirno.'))+`</div>`}
+const dlg=$('#dlg');const show=h=>{dlg.oncancel=null;dlg.innerHTML=h;if(!dlg.open)dlg.showModal()};
 const fld=(l,n,v='',t='text')=>`<label>${l}<input name="${n}" type="${t}" value="${esc(v)}"></label>`;
 function submit(fn){dlg.querySelector('form').onsubmit=async e=>{e.preventDefault();try{await fn(Object.fromEntries(new FormData(e.target)),e.target);dlg.close()}catch{}}}
 const btns=(l='Spremi')=>`<div class="row" style="justify-content:flex-end"><button type="button" onclick="dlg.close()">Odustani</button><button class="p">${l}</button></div>`;
-function loginForm(){show(`<form><h2>Prijava</h2><p class="mute" style="margin:0;text-transform:none;letter-spacing:0">Administrator može dodavati i brisati uređaje, zapise i playliste.</p>${fld('Lozinka','password','','password')}${btns('Prijava')}</form>`);
-  submit(async b=>{role=(await api('POST','login',b)).role;ws&&ws.close();connect();draw()})}
-async function logout(){await api('POST','logout',{});role=OPR_LOGIN?null:'operator';ws&&ws.close();init()}
-const OPR_LOGIN=false;
+const drop=()=>{if(ws){ws.onclose=null;ws.close()}};
+function loginForm(){show(`<form><h2>Prijava</h2><p class="mute" style="margin:0;text-transform:none;letter-spacing:0">Operatori: korisničko ime i lozinka iz Active Directoryja. Administrator: korisničko ime <b>admin</b>.</p>${fld('Korisničko ime','username')}${fld('Lozinka','password','','password')}<div class="row" style="justify-content:flex-end"><button class="p">${I('key')}Prijava</button></div></form>`);
+  dlg.oncancel=e=>e.preventDefault();dlg.querySelector('[name=username]').autocomplete='username';dlg.querySelector('[name=password]').autocomplete='current-password';
+  submit(async b=>{const m=await api('POST','login',b);role=m.role;user=m.user;drop();connect();draw()})}
+async function logout(){await api('POST','logout',{});role=null;user='';drop();S.jobs=[];loginForm()}
 function devForm(id){const d=S.devices.find(x=>x.id==id)||{port:4444,community:'public'};
   show(`<form><h2>${id?'Uredi':'Novi'} uređaj</h2>${fld('Naziv','name',d.name)}${fld('IP adresa','ip',d.ip)}${fld('RTP/UDP port','port',d.port,'number')}${fld('SNMP community','community',d.community)}
   <label class="ck"><input type="checkbox" name="snmp" ${d.snmp===false?'':'checked'}>Prati SNMP-om</label>${btns()}</form>`);
