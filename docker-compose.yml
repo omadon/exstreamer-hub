@@ -9,7 +9,7 @@ services:
       ADMIN_PASSWORD: admin
       # --- Operateri: Active Directory (LDAP) ---
       LDAP_URL: ldaps://dc01.firma.local:636
-	  LDAP_TLS_INSECURE: "1"
+      LDAP_TLS_INSECURE: "1"
       LDAP_DOMAIN: firma.local                      # prijava kao korisnik@firma.local
       LDAP_BASE_DN: DC=firma,DC=local               # za provjeru članstva u grupi
       LDAP_GROUP_DN: CN=Hub-Operatori,OU=Grupe,DC=firma,DC=local   # opcionalno: samo članovi ove grupe (uključujući ugniježđene)
