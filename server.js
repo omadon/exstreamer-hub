@@ -5,14 +5,14 @@ fs.mkdirSync(UP,{recursive:true});
 let db={devices:[],groups:[],playlists:[]};try{db=JSON.parse(fs.readFileSync(DB))}catch{}
 const save=()=>fs.writeFileSync(DB,JSON.stringify(db,null,1)),uid=()=>Math.random().toString(36).slice(2,9);
 const E=(c,m)=>Object.assign(new Error(m),{code:c});
-const stats={},jobs=new Map(),busy=new Map(),log=[],clients=new Set();
+const stats={},jobs=new Map(),busy=new Map(),log=[],clients=new Map();
 
 /* ---------- događaji i push prema GUI-ju ---------- */
 function ev(level,msg){log.unshift({t:Date.now(),level,msg});log.length=Math.min(log.length,200);push();
   if(level==='error'&&process.env.ALERT_WEBHOOK)fetch(process.env.ALERT_WEBHOOK,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({text:msg})}).catch(()=>{})}
-const view=()=>({devices:db.devices.map(d=>({...d,stat:stats[d.id]||{},jobId:busy.get(d.id)||null})),groups:db.groups,playlists:db.playlists,
+const view=ro=>({devices:db.devices.map(d=>({...d,community:ro==='admin'?d.community:undefined,stat:stats[d.id]||{},jobId:busy.get(d.id)||null})),groups:db.groups,playlists:db.playlists,
   files:fs.readdirSync(UP),jobs:[...jobs.values()].map(j=>({id:j.id,label:j.label,prio:j.prio,devices:j.devices,now:j.now})),events:log.slice(0,100)});
-function push(){const m=JSON.stringify({type:'state',...view()});clients.forEach(c=>c.readyState===1&&c.send(m))}
+function push(){clients.forEach((ro,c)=>c.readyState===1&&c.send(JSON.stringify({type:'state',...view(ro)})))}
 
 /* ---------- MP3 -> RTP (RFC 2250, PT 14) ---------- */
 const sock=dgram.createSocket('udp4');sock.bind(()=>{try{sock.setMulticastTTL(16)}catch{}});sock.on('error',e=>ev('error','UDP: '+e.message));
@@ -84,9 +84,22 @@ setTimeout(()=>db.devices.forEach(d=>d.snmp!==false&&poll(d)),2000);
 
 /* ---------- REST ---------- */
 const app=express();app.use(express.json());app.use(express.static(path.join(__dirname,'public')));
+/* ---------- prijava i uloge: admin (dodaje/briše/uređuje) i operator (samo pušta) ---------- */
+const sess=new Map(),ADM=process.env.ADMIN_PASSWORD||'admin',OPR=process.env.OPERATOR_PASSWORD||'';
+if(ADM==='admin')console.warn('UPOZORENJE: postavi ADMIN_PASSWORD u docker-compose.yml');
+const role=q=>{const m=/(?:^|; )sid=(\w+)/.exec(q.headers.cookie||'');return (m&&sess.get(m[1]))||(OPR?null:'operator')};
+app.post('/api/login',(q,r)=>{const p=q.body.password,ro=p===ADM?'admin':(OPR&&p===OPR)?'operator':null;
+  if(!ro)return setTimeout(()=>r.status(401).json({error:'Pogrešna lozinka'}),600);
+  const id=require('crypto').randomBytes(16).toString('hex');sess.set(id,ro);
+  r.setHeader('Set-Cookie',`sid=${id}; HttpOnly; SameSite=Strict; Path=/; Max-Age=86400`);r.json({role:ro})});
+app.post('/api/logout',(q,r)=>{const m=/(?:^|; )sid=(\w+)/.exec(q.headers.cookie||'');m&&sess.delete(m[1]);r.setHeader('Set-Cookie','sid=; Path=/; Max-Age=0');r.json({ok:1})});
+app.get('/api/me',(q,r)=>{const ro=role(q);ro?r.json({role:ro}):r.status(401).json({error:'Prijava je potrebna'})});
+app.use('/api',(q,r,n)=>{const ro=role(q);if(!ro)return r.status(401).json({error:'Prijava je potrebna'});
+  if(q.method!=='GET'&&!['/play','/stop'].includes(q.path)&&ro!=='admin')return r.status(403).json({error:'Samo administrator može mijenjati uređaje, grupe, zapise i playliste'});
+  q.role=ro;n()});
 const wrap=f=>(q,r)=>{try{r.json(f(q)||{ok:1})}catch(e){r.status(e.code||400).json({error:e.message})}};
 const upload=multer({storage:multer.diskStorage({destination:UP,filename:(q,f,cb)=>cb(null,path.basename(Buffer.from(f.originalname,'latin1').toString('utf8')))}),limits:{fileSize:300e6}});
-app.get('/api/state',wrap(()=>view()));
+app.get('/api/state',wrap(q=>view(q.role)));
 const crud=(key,pick)=>{
   app.post(`/api/${key}`,wrap(q=>{const o={id:uid(),...pick(q.body)};db[key].push(o);save();push();return o}));
   app.put(`/api/${key}/:id`,wrap(q=>{const o=db[key].find(x=>x.id===q.params.id);if(!o)throw E(404,'Ne postoji');Object.assign(o,pick(q.body));save();push()}));
@@ -107,8 +120,8 @@ app.post('/api/stop',wrap(q=>{for(const j of [...jobs.values()])if(q.body.all||j
 
 /* ---------- WebSocket: stanje + mikrofon uživo ---------- */
 const server=http.createServer(app),wss=new WebSocketServer({noServer:true});
-server.on('upgrade',(q,s,h)=>wss.handleUpgrade(q,s,h,ws=>{const u=new URL(q.url,'http://x');
-  if(u.pathname==='/ws/state'){clients.add(ws);ws.on('close',()=>clients.delete(ws));ws.send(JSON.stringify({type:'state',...view()}))}
+server.on('upgrade',(q,s,h)=>wss.handleUpgrade(q,s,h,ws=>{const ro=role(q);if(!ro)return ws.close();const u=new URL(q.url,'http://x');
+  if(u.pathname==='/ws/state'){clients.set(ws,ro);ws.on('close',()=>clients.delete(ws));ws.send(JSON.stringify({type:'state',...view(ro)}))}
   else if(u.pathname==='/ws/live'){const [type,id]=(u.searchParams.get('target')||'').split(':');
     try{const {job}=start({type,id},{type:'live'},false);ws.send(JSON.stringify({job:job.id}));
       ws.on('message',m=>{const p=job.proc;if(p&&p.stdin&&p.stdin.writable)p.stdin.write(m)});ws.on('close',()=>stop(job))}

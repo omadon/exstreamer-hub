@@ -5,6 +5,8 @@ services:
     network_mode: host        # potrebno za multicast i UDP prema uređajima
     environment:
       PORT: 8080
+      ADMIN_PASSWORD: admin      # admin: dodaje/briše uređaje, zapise, playliste
+      #OPERATOR_PASSWORD: operater     # ako je postavljeno, operator se mora prijaviti; inače je GUI otvoren za puštanje
       # ALERT_WEBHOOK: https://hooks.slack.com/...   (opcionalno, šalje JSON {"text": "..."})
     volumes:
       - ./data:/data

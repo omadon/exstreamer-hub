@@ -1,0 +1,32 @@
+{
+ "devices": [
+  {
+   "id": "bzf0fk7",
+   "name": "Hrastovica",
+   "ip": "172.16.102.30",
+   "port": 4444,
+   "community": "public",
+   "snmp": true
+  },
+  {
+   "id": "keoghc3",
+   "name": "Gvozd",
+   "ip": "172.16.103.30",
+   "port": 4444,
+   "community": "public",
+   "snmp": true
+  }
+ ],
+ "groups": [
+  {
+   "id": "bftajtl",
+   "name": "Groupa 2",
+   "multicast": "239.10.10.1",
+   "port": 4444,
+   "deviceIds": [
+    "bzf0fk7"
+   ]
+  }
+ ],
+ "playlists": []
+}
