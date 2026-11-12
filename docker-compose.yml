@@ -1,0 +1,10 @@
+services:
+  hub:
+    build: .
+    restart: unless-stopped
+    network_mode: host        # potrebno za multicast i UDP prema uređajima
+    environment:
+      PORT: 8080
+      # ALERT_WEBHOOK: https://hooks.slack.com/...   (opcionalno, šalje JSON {"text": "..."})
+    volumes:
+      - ./data:/data
