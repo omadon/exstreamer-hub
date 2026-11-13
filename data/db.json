@@ -6,7 +6,8 @@
    "ip": "172.16.102.30",
    "port": 4444,
    "community": "public",
-   "snmp": true
+   "snmp": true,
+   "alarm": "file:test.mp3"
   },
   {
    "id": "keoghc3",
@@ -22,7 +23,8 @@
    "ip": "172.16.170.8",
    "port": 4444,
    "community": "public",
-   "snmp": true
+   "snmp": true,
+   "alarm": "none"
   }
  ],
  "groups": [

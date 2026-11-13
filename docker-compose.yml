@@ -9,7 +9,6 @@ services:
       ADMIN_PASSWORD: admin
       # --- Operateri: Active Directory (LDAP) ---
       LDAP_URL: ldaps://dc01.firma.local:636
-      LDAP_TLS_INSECURE: "1"
       LDAP_DOMAIN: firma.local                      # prijava kao korisnik@firma.local
       LDAP_BASE_DN: DC=firma,DC=local               # za provjeru članstva u grupi
       LDAP_GROUP_DN: CN=Hub-Operatori,OU=Grupe,DC=firma,DC=local   # opcionalno: samo članovi ove grupe (uključujući ugniježđene)
@@ -19,6 +18,19 @@ services:
       SYSLOG_PORT: 514
       SYSLOG_PROTO: udp                             # udp ili tcp
       # SYSLOG_FACILITY: 16                         # 16 = local0
+      # --- Izbornik „O aplikaciji” i logo ---
+      ABOUT_COMPANY: Naziv tvrtke d.o.o.
+      ABOUT_DESCRIPTION: |
+        Središnje upravljanje zvučnicima za obavijesti i alarme.
+        Dodajte opis, upute ili radno vrijeme podrške.
+      CONTACT_NAME: Ime Prezime
+      CONTACT_EMAIL: podrska@firma.hr
+      CONTACT_PHONE: "+385 1 234 5678"
+      LOGO_PATH: /config/logo.png                   # PNG, JPG, SVG ili WebP; omjer oko 2.7:1, veći se automatski smanjuje
+      # --- Alarm (gumb sa zvonom na svakom uređaju) ---
+      ALARM_DEFAULT: /config/alarm.mp3              # zadano za sve uređaje: putanja do .mp3/.m3u u kontejneru, ili naziv uploadanog zapisa / playliste
+      # ALARM_DEFAULT_MAP: '{"Hala 1":"/config/hala1.m3u","10.0.0.15":"alarm-skladiste.mp3"}'   # opcionalno: drukčije zadano po nazivu ili IP-u uređaja
       # ALERT_WEBHOOK: https://hooks.slack.com/...  # opcionalno
     volumes:
       - ./data:/data
+      - ./config:/config:ro                         # stavi logo.png u ./config

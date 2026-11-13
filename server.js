@@ -17,7 +17,7 @@ const stats={},jobs=new Map(),busy=new Map(),log=[],clients=new Map();
 /* ---------- događaji i push prema GUI-ju ---------- */
 function ev(level,msg,user){log.unshift({t:Date.now(),level,msg,user});log.length=Math.min(log.length,200);syslog(level,msg,user);console.log(`[${level}] ${user?user+': ':''}${msg}`);push();
   if(level==='error'&&process.env.ALERT_WEBHOOK)fetch(process.env.ALERT_WEBHOOK,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({text:(user?user+': ':'')+msg})}).catch(()=>{})}
-const view=ro=>({devices:db.devices.map(d=>({...d,community:ro==='admin'?d.community:undefined,stat:stats[d.id]||{},jobId:busy.get(d.id)||null})),groups:db.groups,playlists:db.playlists,
+const view=ro=>({devices:db.devices.map(d=>({...d,community:ro==='admin'?d.community:undefined,stat:stats[d.id]||{},...alarmInfo(d),jobId:busy.get(d.id)||null})),groups:db.groups,playlists:db.playlists,alarmDefault:process.env.ALARM_DEFAULT||'',
   files:fs.readdirSync(UP),jobs:[...jobs.values()].map(j=>({id:j.id,label:j.label,prio:j.prio,devices:j.devices,now:j.now})),events:log.slice(0,100)});
 function push(){clients.forEach((ro,c)=>c.readyState===1&&c.send(JSON.stringify({type:'state',...view(ro)})))}
 
@@ -52,15 +52,26 @@ function release(job){for(const id of job.devices)if(busy.get(id)===job.id)busy.
 function finish(job){release(job);if(jobs.delete(job.id)){push()}}
 function stop(job){job.stopped=true;release(job);try{job.proc&&job.proc.kill('SIGKILL')}catch{};if(job.proc&&job.proc.stdin)try{job.proc.stdin.end()}catch{};finish(job)}
 
+/* ---------- alarm: zadano iz compose-a, po uređaju: zadano / vlastiti zapis / isključen ---------- */
+function defaultSpec(d){let m={};try{m=JSON.parse(process.env.ALARM_DEFAULT_MAP||'{}')}catch{}return m[d.name]||m[d.ip]||process.env.ALARM_DEFAULT||''}
+function specSource(spec){if(spec.startsWith('/'))return {type:'path',path:spec};
+  const pl=db.playlists.find(p=>p.name===spec);return pl?{type:'playlist',id:pl.id}:{type:'file',name:spec}}
+function alarmFor(d){
+  if(d.alarm==='none')return null;
+  if(d.alarm){const [t,v]=[d.alarm.split(':')[0],d.alarm.slice(d.alarm.indexOf(':')+1)];
+    return {mode:'custom',source:t==='file'?{type:'file',name:v}:{type:'playlist',id:v},label:t==='file'?v:(db.playlists.find(p=>p.id===v)||{name:'?'}).name}}
+  const spec=defaultSpec(d);return spec?{mode:'default',source:specSource(spec),label:spec.split('/').pop()}:null}
+const alarmInfo=d=>{const a=alarmFor(d);return {alarmMode:a?a.mode:'none',alarmLabel:a?a.label:'',alarmDefault:defaultSpec(d).split('/').pop()}};
+
 /* ---------- pokretanje s prioritetima ----------
    3 = pojedinačna obavijest, 2 = grupna obavijest, 1 = playlista (pozadina).
    Novi posao preuzima uređaj samo od nižeg prioriteta; zauzete uređaje grupa preskače. */
-function start(target,source,loop,user){
+function start(target,source,loop,user,alarm){
   let g=null,devs,tname;
   if(target.type==='group'){g=db.groups.find(x=>x.id===target.id);if(!g)throw E(404,'Grupa ne postoji');
     devs=g.deviceIds.map(id=>db.devices.find(d=>d.id===id)).filter(Boolean);tname=g.name}
   else{const d=db.devices.find(x=>x.id===target.id);if(!d)throw E(404,'Uređaj ne postoji');devs=[d];tname=d.name}
-  const prio=source.type==='playlist'?1:g?2:3;
+  const prio=alarm?4:source.type==='playlist'?1:g?2:3;   /* 4 = alarm: prekida sve */
   const free=[],skipped=[];
   for(const d of devs){const h=jobs.get(busy.get(d.id));(h&&h.prio>=prio?skipped:free).push(d)}
   if(!free.length)throw E(409,'Zauzeto: '+skipped.map(d=>d.name).join(', '));
@@ -69,14 +80,20 @@ function start(target,source,loop,user){
     items=[{name:f,input:path.join(UP,f)}];sname=f}
   else if(source.type==='playlist'){const pl=db.playlists.find(p=>p.id===source.id);if(!pl||!pl.tracks.length)throw E(404,'Playlista je prazna');
     items=pl.tracks.map(t=>/^https?:/.test(t)?{name:t,input:t}:{name:path.basename(t),input:path.join(UP,path.basename(t))});sname=pl.name}
+  else if(source.type==='path'){const p=source.path;if(!fs.existsSync(p))throw E(404,'Alarm datoteka ne postoji: '+p);
+    if(/\.m3u8?$/i.test(p)){const dir=path.dirname(p);
+      items=fs.readFileSync(p,'utf8').split(/\r?\n/).map(l=>l.trim()).filter(l=>l&&!l.startsWith('#')).map(l=>/^https?:/.test(l)?{name:l,input:l}
+        :{name:path.basename(l.replace(/\\/g,'/')),input:l.startsWith('/')?l:/^[a-z]:/i.test(l)?path.join(dir,l.split(/[\\/]/).pop()):path.join(dir,l.replace(/\\/g,'/'))});
+      if(!items.length)throw E(404,'Alarm playlista je prazna')}
+    else items=[{name:path.basename(p),input:p}];sname=path.basename(p)}
   else{items=[{name:'Uživo',input:'pipe:0',live:true}];sname='Uživo';loop=false}
   for(const d of free){const h=jobs.get(busy.get(d.id));if(h){ev('info',`„${h.label}“ prekinut zbog višeg prioriteta`,user);stop(h)}}
   const multi=g&&g.multicast&&!skipped.length;
-  const job={id:uid(),prio,label:`${sname} → ${tname}`,devices:free.map(d=>d.id),seq:Math.floor(Math.random()*65535),ts:Math.floor(Math.random()*2**31),
+  const job={id:uid(),prio,label:`${alarm?'ALARM: ':''}${sname} → ${tname}`,devices:free.map(d=>d.id),seq:Math.floor(Math.random()*65535),ts:Math.floor(Math.random()*2**31),
     ssrc:Math.floor(Math.random()*2**32),dests:multi?[{host:g.multicast,port:g.port||4444}]:free.map(d=>({host:d.ip,port:d.port||4444})),loop};
   jobs.set(job.id,job);free.forEach(d=>busy.set(d.id,job.id));
   if(skipped.length)ev('warn',`Preskočeno (zauzeto višim prioritetom): ${skipped.map(d=>d.name).join(', ')}`,user);
-  ev('info',`Start: ${job.label}${multi?' (multicast '+g.multicast+')':''}${loop?' [petlja]':''}`,user);run(job,items,loop);return {job,skipped:skipped.map(d=>d.name)}}
+  ev(alarm?'warn':'info',`Start: ${job.label}${multi?' (multicast '+g.multicast+')':''}${loop?' [petlja]':''}`,user);run(job,items,loop);return {job,skipped:skipped.map(d=>d.name)}}
 
 /* ---------- VU metar: razina signala po poslu, 10x u sekundi ---------- */
 setInterval(()=>{if(!jobs.size||!clients.size)return;const l={};
@@ -117,6 +134,11 @@ async function ldapAuth(u,p){
     return searchEntries.length>0}
   catch(e){if(/InvalidCredentials/.test(e.name||e.constructor.name))return false;throw e}
   finally{try{await c.unbind()}catch{}}}
+/* javno: podaci za zaglavlje i logo (potrebni i prije prijave) */
+const LOGO=process.env.LOGO_PATH,hasLogo=()=>{try{return !!LOGO&&fs.statSync(LOGO).isFile()}catch{return false}};
+app.get('/logo',(q,r)=>hasLogo()?(r.setHeader('Cache-Control','no-cache'),r.sendFile(path.resolve(LOGO))):r.status(404).end());
+app.get('/api/about',(q,r)=>r.json({company:process.env.ABOUT_COMPANY||'',description:process.env.ABOUT_DESCRIPTION||'',name:process.env.CONTACT_NAME||'',
+  email:process.env.CONTACT_EMAIL||'',phone:process.env.CONTACT_PHONE||'',logo:hasLogo()}));
 app.post('/api/login',async(q,r)=>{const u=String(q.body.username||'').trim(),p=String(q.body.password||'');let ro=null;
   try{if(u.toLowerCase()==='admin'){if(p===ADM)ro='admin'}else if(await ldapAuth(u,p))ro='operator'}
   catch(e){ev('error',`LDAP greška: ${e.message}`);return r.status(503).json({error:'LDAP server nije dostupan'})}
@@ -127,7 +149,7 @@ app.post('/api/login',async(q,r)=>{const u=String(q.body.username||'').trim(),p=
 app.post('/api/logout',(q,r)=>{const x=sessOf(q),m=/(?:^|; )sid=(\w+)/.exec(q.headers.cookie||'');if(x){ev('info','Odjava',x.user);sess.delete(m[1])}r.setHeader('Set-Cookie','sid=; Path=/; Max-Age=0');r.json({ok:1})});
 app.get('/api/me',(q,r)=>{const x=sessOf(q);x?r.json({role:x.role,user:x.user}):r.status(401).json({error:'Prijava je potrebna'})});
 app.use('/api',(q,r,n)=>{const x=sessOf(q);if(!x)return r.status(401).json({error:'Prijava je potrebna'});q.role=x.role;q.user=x.user;
-  if(q.method!=='GET'){const adminOnly=!['/play','/stop'].includes(q.path);
+  if(q.method!=='GET'){const adminOnly=!['/play','/stop','/alarm'].includes(q.path);
     if(adminOnly&&x.role!=='admin'){ev('warn',`Odbijeno (nema ovlasti): ${q.method} ${q.originalUrl}`,x.user);return r.status(403).json({error:'Samo administrator može mijenjati uređaje, grupe, zapise i playliste'})}
     const m=/^\/(devices|groups|playlists)\/(\w+)/.exec(q.path),o=m&&db[m[1]].find(z=>z.id===m[2]),nm=o?o.name:(q.body&&(q.body.name||q.body.ip))||'';
     const what=`${q.method} ${q.originalUrl}${nm?' ('+nm+')':''}`;
@@ -141,7 +163,7 @@ const crud=(key,pick)=>{
   app.put(`/api/${key}/:id`,wrap(q=>{const o=db[key].find(x=>x.id===q.params.id);if(!o)throw E(404,'Ne postoji');Object.assign(o,pick(q.body));save();push()}));
   app.delete(`/api/${key}/:id`,wrap(q=>{db[key]=db[key].filter(x=>x.id!==q.params.id);
     if(key==='devices')db.groups.forEach(g=>g.deviceIds=g.deviceIds.filter(i=>i!==q.params.id));save();push()}))};
-crud('devices',b=>{if(!/^[\w.-]+$/.test(b.ip||''))throw E(400,'Neispravna IP adresa');return {name:String(b.name||b.ip),ip:b.ip,port:+b.port||4444,community:b.community||'public',snmp:b.snmp!==false}});
+crud('devices',b=>{if(!/^[\w.-]+$/.test(b.ip||''))throw E(400,'Neispravna IP adresa');return {name:String(b.name||b.ip),ip:b.ip,port:+b.port||4444,community:b.community||'public',snmp:b.snmp!==false,alarm:String(b.alarm||'')}});
 crud('groups',b=>{if(b.multicast&&!/^2(2[4-9]|3\d)\.\d+\.\d+\.\d+$/.test(b.multicast))throw E(400,'Multicast adresa mora biti 224.0.0.0–239.255.255.255');
   return {name:String(b.name||'Grupa'),multicast:b.multicast||'',port:+b.port||4444,deviceIds:b.deviceIds||[]}});
 crud('playlists',b=>({name:String(b.name||'Playlista'),tracks:(b.tracks||[]).map(String)}));
@@ -151,7 +173,11 @@ app.get('/api/files/:n',(q,r)=>r.sendFile(path.resolve(UP,path.basename(q.params
 app.post('/api/playlists/import',upload.single('f'),wrap(q=>{
   const t=fs.readFileSync(q.file.path,'utf8').split(/\r?\n/).map(s=>s.trim()).filter(s=>s&&!s.startsWith('#')).map(s=>/^https?:/.test(s)?s:s.split(/[\\/]/).pop());
   fs.rmSync(q.file.path);const o={id:uid(),name:q.file.originalname.replace(/\.m3u8?$/i,''),tracks:t};db.playlists.push(o);save();push();return o}));
-app.post('/api/play',wrap(q=>{const {job,skipped}=start(q.body.target,q.body.source,!!q.body.loop,q.user);return {job:job.id,skipped}}));
+app.post('/api/play',wrap(q=>{if(!q.body.source||q.body.source.type==='path')throw E(400,'Neispravan izvor');const {job,skipped}=start(q.body.target,q.body.source,!!q.body.loop,q.user);return {job:job.id,skipped}}));
+app.post('/api/alarm',wrap(q=>{const d=db.devices.find(x=>x.id===q.body.id);if(!d)throw E(404,'Uređaj ne postoji');
+  const a=alarmFor(d);if(!a)throw E(400,'Alarm nije postavljen ili je isključen za ovaj uređaj');
+  return {job:start({type:'device',id:d.id},a.source,false,q.user,true).job.id}}));
+app.get('/favicon.ico',(q,r)=>r.sendFile(path.join(__dirname,'public','apple-touch-icon.png')));
 app.post('/api/stop',wrap(q=>{for(const j of [...jobs.values()])if(q.body.all||j.id===q.body.jobId){ev('info','Stop: '+j.label,q.user);stop(j)}}));
 
 /* ---------- WebSocket: stanje + mikrofon uživo ---------- */
