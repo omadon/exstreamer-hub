@@ -2,7 +2,7 @@ const express=require('express'),http=require('http'),path=require('path'),fs=re
 const {spawn}=require('child_process'),multer=require('multer'),{WebSocketServer}=require('ws'),snmp=require('net-snmp');
 const DATA=process.env.DATA_DIR||'./data',UP=path.join(DATA,'uploads'),DB=path.join(DATA,'db.json');
 fs.mkdirSync(UP,{recursive:true});
-let db={devices:[],groups:[],playlists:[]};try{db=JSON.parse(fs.readFileSync(DB))}catch{}
+let db={devices:[],groups:[],playlists:[],locations:[]};try{db=JSON.parse(fs.readFileSync(DB))}catch{}db.locations=db.locations||[];
 const save=()=>fs.writeFileSync(DB,JSON.stringify(db,null,1)),uid=()=>Math.random().toString(36).slice(2,9);
 const E=(c,m)=>Object.assign(new Error(m),{code:c});
 const os=require('os'),net=require('net');
@@ -17,7 +17,7 @@ const stats={},jobs=new Map(),busy=new Map(),log=[],clients=new Map();
 /* ---------- događaji i push prema GUI-ju ---------- */
 function ev(level,msg,user){log.unshift({t:Date.now(),level,msg,user});log.length=Math.min(log.length,200);syslog(level,msg,user);console.log(`[${level}] ${user?user+': ':''}${msg}`);push();
   if(level==='error'&&process.env.ALERT_WEBHOOK)fetch(process.env.ALERT_WEBHOOK,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({text:(user?user+': ':'')+msg})}).catch(()=>{})}
-const view=ro=>({devices:db.devices.map(d=>({...d,community:ro==='admin'?d.community:undefined,stat:stats[d.id]||{},...alarmInfo(d),jobId:busy.get(d.id)||null})),groups:db.groups,playlists:db.playlists,alarmDefault:process.env.ALARM_DEFAULT||'',
+const view=ro=>({devices:db.devices.map(d=>({...d,community:ro==='admin'?d.community:undefined,stat:stats[d.id]||{},...alarmInfo(d),jobId:busy.get(d.id)||null})),groups:db.groups,playlists:db.playlists,alarmDefault:process.env.ALARM_DEFAULT||'',locations:db.locations,
   files:fs.readdirSync(UP),jobs:[...jobs.values()].map(j=>({id:j.id,label:j.label,prio:j.prio,devices:j.devices,now:j.now})),events:log.slice(0,100)});
 function push(){clients.forEach((ro,c)=>c.readyState===1&&c.send(JSON.stringify({type:'state',...view(ro)})))}
 
@@ -89,7 +89,7 @@ function start(target,source,loop,user,alarm){
   else{items=[{name:'Uživo',input:'pipe:0',live:true}];sname='Uživo';loop=false}
   for(const d of free){const h=jobs.get(busy.get(d.id));if(h){ev('info',`„${h.label}“ prekinut zbog višeg prioriteta`,user);stop(h)}}
   const multi=g&&g.multicast&&!skipped.length;
-  const job={id:uid(),prio,label:`${alarm?'ALARM: ':''}${sname} → ${tname}`,devices:free.map(d=>d.id),seq:Math.floor(Math.random()*65535),ts:Math.floor(Math.random()*2**31),
+  const job={id:uid(),t0:Date.now(),prio,label:`${alarm?'ALARM: ':''}${sname} → ${tname}`,devices:free.map(d=>d.id),seq:Math.floor(Math.random()*65535),ts:Math.floor(Math.random()*2**31),
     ssrc:Math.floor(Math.random()*2**32),dests:multi?[{host:g.multicast,port:g.port||4444}]:free.map(d=>({host:d.ip,port:d.port||4444})),loop};
   jobs.set(job.id,job);free.forEach(d=>busy.set(d.id,job.id));
   if(skipped.length)ev('warn',`Preskočeno (zauzeto višim prioritetom): ${skipped.map(d=>d.name).join(', ')}`,user);
@@ -100,18 +100,47 @@ setInterval(()=>{if(!jobs.size||!clients.size)return;const l={};
   for(const j of jobs.values()){const v=j.lv||0;j.lv=0;l[j.id]=Math.max(0,Math.min(1,(20*Math.log10(v+1e-6)+60)/60))}
   const m=JSON.stringify({type:'vu',l});clients.forEach((ro,c)=>c.readyState===1&&c.send(m))},100);
 
-/* ---------- SNMP nadzor ---------- */
-const OIDS=['1.3.6.1.2.1.1.1.0','1.3.6.1.2.1.1.3.0','1.3.6.1.2.1.2.2.1.10.1','1.3.6.1.2.1.2.2.1.16.1'];
-function poll(d){const s=snmp.createSession(d.ip,d.community||'public',{timeout:2000,retries:0});
-  s.on('error',()=>{});
-  s.get(OIDS,(err,vb)=>{try{s.close()}catch{};const st=stats[d.id]=stats[d.id]||{fails:0,online:null};
-    if(err){st.fails++;if(st.fails>=3&&st.online!==false){st.online=false;ev('error',`Uređaj „${d.name}“ (${d.ip}) ne odgovara na SNMP`)}}
-    else{if(st.online===false)ev('info',`Uređaj „${d.name}“ je ponovno dostupan`);st.fails=0;st.online=true;st.seen=Date.now();
-      const v=i=>vb[i]&&!snmp.isVarbindError(vb[i])?vb[i].value:null;
-      st.descr=v(0)&&String(v(0));st.uptime=v(1)!=null?Math.floor(v(1)/100):null;st.rx=v(2);st.tx=v(3)}
-    push()})}
-setInterval(()=>db.devices.forEach(d=>d.snmp!==false&&poll(d)),+process.env.POLL_MS||30000);
-setTimeout(()=>db.devices.forEach(d=>d.snmp!==false&&poll(d)),2000);
+/* ---------- SNMP nadzor (SNMP v1; Barix OID-ovi iz BARIXAUDIOSNMP-MIB, sve je read-only) ----------
+   Dostupnost: odgovor na sysDescr/sysUpTime. Stanje zvuka: audioState, buffer, gubitak okvira, soft-errori.
+   Dok se na uređaj nešto pušta, upit je svakih 5 s, inače svakih POLL_MS (30 s). Praćenje se gasi po uređaju (snmp:false). */
+const B='1.3.6.1.4.1.17491.2.1.';
+const O={descr:'1.3.6.1.2.1.1.1.0',up:'1.3.6.1.2.1.1.3.0',name:'1.3.6.1.2.1.1.5.0',loc:'1.3.6.1.2.1.1.6.0',oper:'1.3.6.1.2.1.2.2.1.8.1',udpIn:'1.3.6.1.2.1.7.1.0',
+  left:B+'1.1.0',right:B+'1.2.0',buf:B+'2.1.0',loss:B+'2.2.0',soft:B+'2.3.0',stream:B+'3.1.0',bitrate:B+'3.3.0',reconn:B+'3.4.0',err:B+'3.6.0',errT:B+'3.7.0'};
+const ERR={0:'bez greške',1:'DNS problem',2:'nema TCP odgovora',3:'TCP zatvoren',4:'nema HTTP odgovora',5:'neispravan HTTP odgovor',11:'istek veze',13:'previše ispadanja',16:'greška playliste',17:'prazan URL',19:'nepodržan format zvuka',99:'interna greška'};
+const errName=c=>ERR[c]||(c>=400&&c<600?'HTTP '+c:'kod '+c);
+const sess1=d=>{const s=snmp.createSession(d.ip,d.community||'public',{version:snmp.Version1,timeout:2000,retries:1});s.on('error',()=>{});return s};
+const val=(vb,i)=>vb&&vb[i]&&!snmp.isVarbindError(vb[i])?vb[i].value:null;
+const txt=x=>x==null?null:Buffer.isBuffer(x)?x.toString():x;
+const sget=(s,o)=>new Promise(r=>s.get(o,(e,v)=>r(e?null:v)));   /* v1: jedan nepodržan OID ruši cijeli upit, zato zasebni upiti */
+async function poll(d){const st=stats[d.id]=stats[d.id]||{fails:0,online:null},now=Date.now();if(st.polling)return;st.polling=true;st.last=now;const s=sess1(d);
+  try{
+    const vb=await sget(s,[O.descr,O.up,O.name,O.loc,O.oper]);
+    if(!vb){st.fails++;if(st.fails>=3&&st.online!==false){st.online=false;ev('error',`Uređaj „${d.name}“ (${d.ip}) ne odgovara na SNMP`)}return}
+    if(st.online===false)ev('info',`Uređaj „${d.name}“ je ponovno dostupan`);
+    st.fails=0;st.online=true;st.seen=now;st.descr=txt(val(vb,0));st.fw=(/Snr:?\s*(\S+)/i.exec(st.descr||'')||[])[1]||null;
+    st.uptime=val(vb,1)!=null?Math.floor(val(vb,1)/100):null;st.sysName=txt(val(vb,2));st.sysLoc=txt(val(vb,3));st.oper=val(vb,4);
+    const v2=await sget(s,[O.udpIn]);
+    if(v2){const u=val(v2,0);if(u!=null){if(st.udpIn!=null&&st.udpAt&&u>=st.udpIn)st.pps=Math.round((u-st.udpIn)/((now-st.udpAt)/1000)*10)/10;st.udpIn=u;st.udpAt=now}}
+    const v3=await sget(s,[O.left,O.right,O.buf,O.loss,O.soft,O.stream,O.bitrate,O.reconn,O.err,O.errT]);
+    if(v3){const n=i=>val(v3,i);st.audio=Math.max(n(0)||0,n(1)||0);st.buf=n(2);st.loss=n(3);st.soft=n(4);st.streamNo=n(5);st.bitrate=n(6);st.reconn=n(7);
+      if(st.errT!=null&&n(9)!=null&&n(9)!==st.errT&&busy.has(d.id))ev('warn',`Uređaj „${d.name}“ javlja grešku streama: ${errName(n(8))}`);
+      st.err=n(8);st.errT=n(9)}
+    checkStream(d,st)}
+  finally{try{s.close()}catch{}st.polling=false;push()}}
+function checkStream(d,st){const j=jobs.get(busy.get(d.id));
+  if(!j){st.low=0;st.jb=null;return}
+  if(!st.jb||st.jb.id!==j.id)st.jb={id:j.id,loss:st.loss,soft:st.soft};const b=st.jb;
+  if(st.loss!=null&&b.loss!=null&&st.loss-b.loss>=25&&!b.wl){b.wl=1;ev('warn',`Uređaj „${d.name}“ je izgubio ${st.loss-b.loss} audio okvira tijekom „${j.label}“ (provjeri mrežu)`)}
+  if(st.soft!=null&&b.soft!=null&&st.soft-b.soft>=10&&!b.ws){b.ws=1;ev('warn',`Uređaj „${d.name}“: buffer prazan ili gubitak veći od korekcije (${st.soft-b.soft}×) tijekom „${j.label}“`)}
+  if(Date.now()-j.t0<12000||st.pps==null)return;
+  if(st.pps<5){if(++st.low===2&&st.warned!==j.id){st.warned=j.id;ev('error',`Uređaj „${d.name}“ ne prima audio tok (${st.pps} pkt/s) dok se pušta „${j.label}“. Provjeri mrežu i multicast članstvo.`)}}else st.low=0}
+setInterval(()=>{const n=Date.now();db.devices.forEach(d=>{if(d.snmp===false){delete stats[d.id];return}
+  const st=stats[d.id],every=busy.has(d.id)?5000:(+process.env.POLL_MS||30000);if(!st||!st.last||n-st.last>=every-200)poll(d)})},2500);
+
+/* ---------- SNMP dijagnostika: koji se brojači mijenjaju dok se zvuk pušta ---------- */
+const walk=(d,base)=>new Promise(res=>{const out={},s=sess1(d);
+  s.subtree(base,vbs=>{for(const v of vbs)if(!snmp.isVarbindError(v))out[v.oid]=txt(v.value)},()=>{try{s.close()}catch{}res(out)})});
+const snap=async d=>Object.assign({},...await Promise.all(['1.3.6.1.4.1.17491','1.3.6.1.2.1.7','1.3.6.1.2.1.2.2'].map(b=>walk(d,b))));
 
 /* ---------- REST ---------- */
 const app=express();app.use(express.json());app.use(express.static(path.join(__dirname,'public'),{setHeaders:r=>r.setHeader('Cache-Control','no-cache')}));
@@ -151,7 +180,7 @@ app.get('/api/me',(q,r)=>{const x=sessOf(q);x?r.json({role:x.role,user:x.user}):
 app.use('/api',(q,r,n)=>{const x=sessOf(q);if(!x)return r.status(401).json({error:'Prijava je potrebna'});q.role=x.role;q.user=x.user;
   if(q.method!=='GET'){const adminOnly=!['/play','/stop','/alarm'].includes(q.path);
     if(adminOnly&&x.role!=='admin'){ev('warn',`Odbijeno (nema ovlasti): ${q.method} ${q.originalUrl}`,x.user);return r.status(403).json({error:'Samo administrator može mijenjati uređaje, grupe, zapise i playliste'})}
-    const m=/^\/(devices|groups|playlists)\/(\w+)/.exec(q.path),o=m&&db[m[1]].find(z=>z.id===m[2]),nm=o?o.name:(q.body&&(q.body.name||q.body.ip))||'';
+    const m=/^\/(devices|groups|playlists|locations)\/(\w+)/.exec(q.path),o=m&&db[m[1]].find(z=>z.id===m[2]),nm=o?o.name:(q.body&&(q.body.name||q.body.ip))||'';
     const what=`${q.method} ${q.originalUrl}${nm?' ('+nm+')':''}`;
     r.on('finish',()=>{if(r.statusCode>=400)ev('warn',`Neuspjelo: ${what} → ${r.statusCode}`,x.user);else if(adminOnly)ev('info',what,x.user)})}
   n()});
@@ -162,10 +191,11 @@ const crud=(key,pick)=>{
   app.post(`/api/${key}`,wrap(q=>{const o={id:uid(),...pick(q.body)};db[key].push(o);save();push();return o}));
   app.put(`/api/${key}/:id`,wrap(q=>{const o=db[key].find(x=>x.id===q.params.id);if(!o)throw E(404,'Ne postoji');Object.assign(o,pick(q.body));save();push()}));
   app.delete(`/api/${key}/:id`,wrap(q=>{db[key]=db[key].filter(x=>x.id!==q.params.id);
-    if(key==='devices')db.groups.forEach(g=>g.deviceIds=g.deviceIds.filter(i=>i!==q.params.id));save();push()}))};
-crud('devices',b=>{if(!/^[\w.-]+$/.test(b.ip||''))throw E(400,'Neispravna IP adresa');return {name:String(b.name||b.ip),ip:b.ip,port:+b.port||4444,community:b.community||'public',snmp:b.snmp!==false,alarm:String(b.alarm||'')}});
+    if(key==='devices')db.groups.forEach(g=>g.deviceIds=g.deviceIds.filter(i=>i!==q.params.id));if(key==='locations')db.devices.forEach(d=>{if(d.locationId===q.params.id)d.locationId=''});save();push()}))};
+crud('devices',b=>{if(!/^[\w.-]+$/.test(b.ip||''))throw E(400,'Neispravna IP adresa');return {name:String(b.name||b.ip),ip:b.ip,port:+b.port||4444,community:b.community||'public',snmp:b.snmp!==false,alarm:String(b.alarm||''),locationId:db.locations.some(l=>l.id===b.locationId)?b.locationId:''}});
 crud('groups',b=>{if(b.multicast&&!/^2(2[4-9]|3\d)\.\d+\.\d+\.\d+$/.test(b.multicast))throw E(400,'Multicast adresa mora biti 224.0.0.0–239.255.255.255');
   return {name:String(b.name||'Grupa'),multicast:b.multicast||'',port:+b.port||4444,deviceIds:b.deviceIds||[]}});
+crud('locations',b=>{const n=String(b.name||'').trim();if(!n)throw E(400,'Naziv lokacije je obavezan');return {name:n}});
 crud('playlists',b=>({name:String(b.name||'Playlista'),tracks:(b.tracks||[]).map(String)}));
 app.post('/api/files',upload.array('f'),wrap(()=>{push()}));
 app.delete('/api/files/:n',wrap(q=>{fs.rmSync(path.join(UP,path.basename(q.params.n)),{force:true});push()}));
@@ -178,6 +208,12 @@ app.post('/api/alarm',wrap(q=>{const d=db.devices.find(x=>x.id===q.body.id);if(!
   const a=alarmFor(d);if(!a)throw E(400,'Alarm nije postavljen ili je isključen za ovaj uređaj');
   return {job:start({type:'device',id:d.id},a.source,false,q.user,true).job.id}}));
 app.get('/favicon.ico',(q,r)=>r.sendFile(path.join(__dirname,'public','apple-touch-icon.png')));
+app.post('/api/devices/:id/snmp-diff',async(q,r)=>{try{const d=db.devices.find(x=>x.id===q.params.id);if(!d)throw E(404,'Uređaj ne postoji');
+  const sec=Math.min(60,Math.max(5,+q.body.seconds||15)),a=await snap(d);if(!Object.keys(a).length)throw E(504,'Uređaj ne odgovara na SNMP');
+  await new Promise(z=>setTimeout(z,sec*1000));const b=await snap(d),ch=[];
+  for(const o in b)if(typeof b[o]==='number'&&typeof a[o]==='number'&&a[o]!==b[o])ch.push({oid:o,before:a[o],after:b[o],delta:b[o]-a[o]});
+  ev('info',`SNMP dijagnostika „${d.name}“: ${ch.length} brojača se promijenilo u ${sec} s`,q.user);r.json({seconds:sec,total:Object.keys(b).length,changes:ch})}
+  catch(e){r.status(e.code||500).json({error:e.message})}});
 app.post('/api/stop',wrap(q=>{for(const j of [...jobs.values()])if(q.body.all||j.id===q.body.jobId){ev('info','Stop: '+j.label,q.user);stop(j)}}));
 
 /* ---------- WebSocket: stanje + mikrofon uživo ---------- */

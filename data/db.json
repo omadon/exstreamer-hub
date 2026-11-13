@@ -7,7 +7,8 @@
    "port": 4444,
    "community": "public",
    "snmp": true,
-   "alarm": "file:test.mp3"
+   "alarm": "file:test.mp3",
+   "locationId": "652aocr"
   },
   {
    "id": "keoghc3",
@@ -15,16 +16,19 @@
    "ip": "172.16.103.30",
    "port": 4444,
    "community": "public",
-   "snmp": true
+   "snmp": true,
+   "alarm": "",
+   "locationId": "652aocr"
   },
   {
    "id": "b878mdz",
-   "name": "Gvozd",
+   "name": "Gvozd2",
    "ip": "172.16.170.8",
    "port": 4444,
    "community": "public",
    "snmp": true,
-   "alarm": "none"
+   "alarm": "none",
+   "locationId": "7jpifbi"
   }
  ],
  "groups": [
@@ -38,5 +42,27 @@
    ]
   }
  ],
- "playlists": []
+ "playlists": [],
+ "locations": [
+  {
+   "id": "652aocr",
+   "name": "Sisak"
+  },
+  {
+   "id": "7jpifbi",
+   "name": "Omišalj"
+  },
+  {
+   "id": "7ki12l9",
+   "name": "Sl. Brod"
+  },
+  {
+   "id": "po2f0ub",
+   "name": "Virje"
+  },
+  {
+   "id": "zxnsvmw",
+   "name": "Žitnjak"
+  }
+ ]
 }
